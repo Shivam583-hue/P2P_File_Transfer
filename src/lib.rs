@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{fs, io, sync::Arc};
+use tokio::sync::Mutex;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -192,23 +193,49 @@ pub async fn leecher() -> io::Result<()> {
 
     drop(tracker_stream);
     println!("Peers: {:?}", peers);
-    println!("Connecting to peer: {:?}", peers[0]);
-    let mut stream = TcpStream::connect(peers[0]).await?;
 
-    for i in 0..manifest.numberof_chunks {
-        send_request(&mut stream, i as u32).await?;
+    let chunks: Arc<Mutex<Vec<Option<Vec<u8>>>>> =
+        Arc::new(Mutex::new(vec![None; manifest.numberof_chunks]));
+    let total_chunks = manifest.numberof_chunks;
+    let num_peers = peers.len();
 
-        let chunk = read_response(&mut stream).await?;
+    let mut handles = Vec::new();
 
-        if hash_chunk(&chunk) != manifest.hashes[i] {
-            return Err(io::Error::new(io::ErrorKind::Other, "hash mismatch"));
-        }
+    for (i, peer) in peers.iter().enumerate() {
+        let start = i * total_chunks / num_peers;
+        let end = (i + 1) * total_chunks / num_peers;
+        let peer_addr = *peer;
+        let chunks_clone = chunks.clone();
+        let manifest_clone = manifest.clone();
 
-        let filename = format!("message.chunk{}", i);
-        fs::write(filename, chunk)?;
+        let handle = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(peer_addr).await.unwrap();
+            for i in start..end {
+                send_request(&mut stream, i as u32).await.unwrap();
+                let chunk = read_response(&mut stream).await.unwrap();
+                if hash_chunk(&chunk) != manifest_clone.hashes[i] {
+                    panic!("hash mismatch");
+                }
+                let mut lock = chunks_clone.lock().await;
+                lock[i] = Some(chunk);
+            }
+        });
+        handles.push(handle);
+
     }
 
-    reassembly().unwrap();
+    for h in handles {
+        h.await.unwrap();
+    }
+    let lock = chunks.lock().await;
+
+    let mut final_data = Vec::new();
+
+    for chunk in lock.iter() {
+        final_data.extend(chunk.as_ref().unwrap());
+    }
+
+    fs::write(&manifest.filename, final_data)?;
 
     println!("Download + reassembly complete");
 
