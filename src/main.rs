@@ -31,6 +31,7 @@ async fn main() {
             }
 
             let file1 = Manifest {
+                file_hash: "myfile123".to_string(),
                 filename: "message.txt".to_string(),
                 total_size: attr.len(),
                 chunk_size: 256,

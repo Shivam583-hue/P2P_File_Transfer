@@ -1,4 +1,5 @@
 {
+  "file_hash": "myfile123",
   "filename": "message.txt",
   "total_size": 2580,
   "chunk_size": 256,

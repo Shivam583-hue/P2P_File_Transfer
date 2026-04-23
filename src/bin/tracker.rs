@@ -1,6 +1,7 @@
 use dashmap::DashMap;
+use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::{error::Error, io, net::SocketAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -16,7 +17,11 @@ async fn process(
 
     let message_type = buf[0];
     if message_type == 0x01 {
-        let addr = socket.peer_addr()?;
+        let port = u16::from_be_bytes([buf[33], buf[34]]);
+
+        let ip = socket.peer_addr()?.ip();
+
+        let addr = SocketAddr::new(ip, port);
 
         let hash_bytes = &buf[1..33];
         let hash = String::from_utf8_lossy(hash_bytes).to_string();

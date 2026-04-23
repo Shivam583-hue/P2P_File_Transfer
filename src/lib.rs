@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{fs, io, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -153,8 +154,8 @@ pub async fn leecher() -> io::Result<()> {
     let mani_str = fs::read_to_string("message.manifest.json")?;
     let manifest = deserialize_manifest(&mani_str).unwrap();
 
-    let mut stream = TcpStream::connect("127.0.0.1:9000").await?;
-    let mut buf = [0u8; 33];
+    let mut tracker_stream = TcpStream::connect("127.0.0.1:9000").await?;
+    let mut buf = [0u8; 35];
     buf[0] = 0x02;
 
     let hash_bytes = manifest.file_hash.as_bytes();
@@ -163,11 +164,36 @@ pub async fn leecher() -> io::Result<()> {
     fixed_hash[..len].copy_from_slice(&hash_bytes[..len]);
 
     buf[1..33].copy_from_slice(&fixed_hash);
+    buf[33..35].copy_from_slice(&0u16.to_be_bytes());
 
-    stream.write_all(&buf).await?;
+    tracker_stream.write_all(&buf).await?;
 
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
+    tracker_stream.read_exact(&mut len_buf).await?;
+    let number_of_peers = u32::from_be_bytes(len_buf);
+
+    let total_bytes = number_of_peers as usize * 6;
+    let mut peers_buf = vec![0u8; total_bytes];
+
+    tracker_stream.read_exact(&mut peers_buf).await?;
+
+    let mut peers = Vec::new();
+
+    for chunk in peers_buf.chunks_exact(6) {
+        let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
+        let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+        let addr = SocketAddr::new(IpAddr::V4(ip), port);
+
+        peers.push(addr);
+    }
+    if peers.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::Other, "no peers found"));
+    }
+
+    drop(tracker_stream);
+    println!("Peers: {:?}", peers);
+    println!("Connecting to peer: {:?}", peers[0]);
+    let mut stream = TcpStream::connect(peers[0]).await?;
 
     for i in 0..manifest.numberof_chunks {
         send_request(&mut stream, i as u32).await?;
