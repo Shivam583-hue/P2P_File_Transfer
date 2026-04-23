@@ -1,0 +1,190 @@
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{fs, io, sync::Arc};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Manifest {
+    pub file_hash: String,
+    pub filename: String,
+    pub total_size: u64,
+    pub chunk_size: usize,
+    pub numberof_chunks: usize,
+    pub hashes: Vec<[u8; 32]>,
+}
+
+pub fn hash_chunk(chunk: &[u8]) -> [u8; 32] {
+    let result = Sha256::digest(chunk);
+    result.into()
+}
+
+fn deserialize_manifest(mani: &str) -> Result<Manifest, Box<dyn std::error::Error>> {
+    let manifest: Manifest = serde_json::from_str(mani)?;
+    Ok(manifest)
+}
+
+pub fn reassembly() -> Result<(), Box<dyn std::error::Error>> {
+    let mani_str = fs::read_to_string("message.manifest.json")?;
+    let manifest = deserialize_manifest(&mani_str)?;
+
+    let mut chunk_store: Vec<u8> = Vec::new();
+
+    for i in 0..manifest.numberof_chunks {
+        let chunk_filename = format!("message.chunk{}", i);
+        let chunk_data = fs::read(&chunk_filename)?;
+
+        let hash = hash_chunk(&chunk_data);
+        if hash != manifest.hashes[i] {
+            return Err(format!("Hash mismatch for chunk {}", i).into());
+        }
+
+        chunk_store.extend(chunk_data);
+    }
+
+    fs::write(&manifest.filename, &chunk_store)?;
+    Ok(())
+}
+
+async fn send_chunk(stream: &mut TcpStream, chunk: &[u8]) -> io::Result<()> {
+    let length = chunk.len() as u32;
+
+    stream.write_all(&length.to_be_bytes()).await?;
+    stream.write_all(chunk).await?;
+
+    Ok(())
+}
+
+async fn read_response(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+
+    let length = u32::from_be_bytes(len_buf) as usize;
+
+    let mut data = vec![0u8; length];
+    stream.read_exact(&mut data).await?;
+
+    Ok(data)
+}
+
+async fn send_request(stream: &mut TcpStream, chunk_index: u32) -> io::Result<()> {
+    let mut buf = [0u8; 5];
+
+    buf[0] = 0x01;
+    buf[1..5].copy_from_slice(&chunk_index.to_be_bytes());
+
+    stream.write_all(&buf).await?;
+    Ok(())
+}
+
+async fn process(mut socket: TcpStream, chunks: Arc<Vec<Vec<u8>>>) -> io::Result<()> {
+    let mut buf = [0u8; 5];
+
+    loop {
+        if socket.read_exact(&mut buf).await.is_err() {
+            break;
+        }
+
+        let message_type = buf[0];
+        let chunk_index = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+
+        if message_type != 0x01 {
+            continue;
+        }
+
+        if chunk_index >= chunks.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad index"));
+        }
+
+        let chunk = &chunks[chunk_index];
+        send_chunk(&mut socket, chunk).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn seeder() -> io::Result<()> {
+    let mani_str = fs::read_to_string("message.manifest.json")?;
+    let manifest = deserialize_manifest(&mani_str).unwrap();
+
+    let mut chunk_vec = Vec::new();
+    for i in 0..manifest.numberof_chunks {
+        let filename = format!("message.chunk{}", i);
+        let data = fs::read(filename)?;
+        chunk_vec.push(data);
+    }
+
+    let chunks = Arc::new(chunk_vec);
+
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    println!("Seeder running on 127.0.0.1:8080");
+
+    let mut stream = TcpStream::connect("127.0.0.1:9000").await?;
+
+    let mut buf = [0u8; 35];
+    buf[0] = 0x01;
+
+    let hash_bytes = manifest.file_hash.as_bytes();
+    let mut fixed_hash = [0u8; 32];
+    let len = hash_bytes.len().min(32);
+    fixed_hash[..len].copy_from_slice(&hash_bytes[..len]);
+
+    buf[1..33].copy_from_slice(&fixed_hash);
+
+    buf[33..35].copy_from_slice(&8080u16.to_be_bytes());
+
+    stream.write_all(&buf).await?;
+
+    loop {
+        let (socket, _) = listener.accept().await?;
+        let chunks_clone = chunks.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = process(socket, chunks_clone).await {
+                eprintln!("Connection error: {}", e);
+            }
+        });
+    }
+}
+
+pub async fn leecher() -> io::Result<()> {
+    let mani_str = fs::read_to_string("message.manifest.json")?;
+    let manifest = deserialize_manifest(&mani_str).unwrap();
+
+    let mut stream = TcpStream::connect("127.0.0.1:9000").await?;
+    let mut buf = [0u8; 33];
+    buf[0] = 0x02;
+
+    let hash_bytes = manifest.file_hash.as_bytes();
+    let mut fixed_hash = [0u8; 32];
+    let len = hash_bytes.len().min(32);
+    fixed_hash[..len].copy_from_slice(&hash_bytes[..len]);
+
+    buf[1..33].copy_from_slice(&fixed_hash);
+
+    stream.write_all(&buf).await?;
+
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+
+    for i in 0..manifest.numberof_chunks {
+        send_request(&mut stream, i as u32).await?;
+
+        let chunk = read_response(&mut stream).await?;
+
+        if hash_chunk(&chunk) != manifest.hashes[i] {
+            return Err(io::Error::new(io::ErrorKind::Other, "hash mismatch"));
+        }
+
+        let filename = format!("message.chunk{}", i);
+        fs::write(filename, chunk)?;
+    }
+
+    reassembly().unwrap();
+
+    println!("Download + reassembly complete");
+
+    Ok(())
+}

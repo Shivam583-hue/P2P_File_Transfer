@@ -1,0 +1,15 @@
+main.rs:
+  matches args with seed to launch the seed, the leecher, or to turn files into chunks at the start. 
+
+lib.rs:
+  hash_chunk: hashes the chunks, straightforward
+  deserialise_manifest: deserialises the json into the struct, straightforward
+  reassembly: reads the json file, calls the deserialiser, hashes and verifies i suppose
+  send chunk: writes to the stream in two parts, first the length in bytes, then the chunk itself.
+  read response: creates a buffer of size 4 bytes, reads 4 bytes from stream, create a vec, and read into the vec
+  send request: creates a buffer of size 5 bytes, first byte is the kind of task to do, the rest are the chunk index, writes the buffer to stream.
+
+  process: creates a buffer of size 5, loops, reads 5 bytes from stream, parses the bytes, sends chunk to stream.
+  seeder: loads the manifest, loads chunks into memory, creates an arc and a listener, loops and spawns tokio, and calls process over each chunk
+  leecher: loads manifest, for each chunk, sends chunk in request, read response, verify the hash, save the chunk, and then reassemble the file.
+  tracker : the leecher now has no clue of where the file is, new workflow, seeder mentions that it has the file and is running on port 8080, the tracker records and informs the leecher, the leecher connects to the port 8080 and carries out the reassembly. 
