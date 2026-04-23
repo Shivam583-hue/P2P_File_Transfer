@@ -125,7 +125,7 @@ pub async fn seeder() -> io::Result<()> {
 
     let mut stream = TcpStream::connect("127.0.0.1:9000").await?;
 
-    let mut buf = [0u8; 35];
+    let mut buf = [0u8; 67];
     buf[0] = 0x01;
 
     let hash_bytes = manifest.file_hash.as_bytes();
@@ -133,9 +133,8 @@ pub async fn seeder() -> io::Result<()> {
     let len = hash_bytes.len().min(32);
     fixed_hash[..len].copy_from_slice(&hash_bytes[..len]);
 
-    buf[1..33].copy_from_slice(&fixed_hash);
-
-    buf[33..35].copy_from_slice(&8080u16.to_be_bytes());
+    buf[1..65].copy_from_slice(manifest.file_hash.as_bytes());
+    buf[65..67].copy_from_slice(&8080u16.to_be_bytes());
 
     stream.write_all(&buf).await?;
 
@@ -156,7 +155,7 @@ pub async fn leecher() -> io::Result<()> {
     let manifest = deserialize_manifest(&mani_str).unwrap();
 
     let mut tracker_stream = TcpStream::connect("127.0.0.1:9000").await?;
-    let mut buf = [0u8; 35];
+    let mut buf = [0u8; 67];
     buf[0] = 0x02;
 
     let hash_bytes = manifest.file_hash.as_bytes();
@@ -164,8 +163,8 @@ pub async fn leecher() -> io::Result<()> {
     let len = hash_bytes.len().min(32);
     fixed_hash[..len].copy_from_slice(&hash_bytes[..len]);
 
-    buf[1..33].copy_from_slice(&fixed_hash);
-    buf[33..35].copy_from_slice(&0u16.to_be_bytes());
+    buf[1..65].copy_from_slice(manifest.file_hash.as_bytes());
+    buf[65..67].copy_from_slice(&8080u16.to_be_bytes());
 
     tracker_stream.write_all(&buf).await?;
 
@@ -203,7 +202,11 @@ pub async fn leecher() -> io::Result<()> {
 
     for (i, peer) in peers.iter().enumerate() {
         let start = i * total_chunks / num_peers;
-        let end = (i + 1) * total_chunks / num_peers;
+        let end = if i == num_peers - 1 {
+            total_chunks
+        } else {
+            (i + 1) * total_chunks / num_peers
+        };
         let peer_addr = *peer;
         let chunks_clone = chunks.clone();
         let manifest_clone = manifest.clone();

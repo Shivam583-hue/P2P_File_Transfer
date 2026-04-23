@@ -9,7 +9,7 @@ async fn process(
     mut socket: TcpStream,
     a: Arc<DashMap<String, Vec<SocketAddr>>>,
 ) -> io::Result<()> {
-    let mut buf = [0u8; 35];
+    let mut buf = [0u8; 67];
 
     if socket.read_exact(&mut buf).await.is_err() {
         return Ok(());
@@ -17,14 +17,20 @@ async fn process(
 
     let message_type = buf[0];
     if message_type == 0x01 {
-        let port = u16::from_be_bytes([buf[33], buf[34]]);
+        let port = u16::from_be_bytes([buf[65], buf[66]]);
 
         let ip = socket.peer_addr()?.ip();
 
         let addr = SocketAddr::new(ip, port);
 
-        let hash_bytes = &buf[1..33];
+        let hash_bytes = &buf[1..65];
         let hash = String::from_utf8_lossy(hash_bytes).to_string();
+
+        println!("Announce received. Hash {}", hash.clone());
+        println!(
+            "Tracker state: {:?}",
+            a.iter().map(|e| e.key().clone()).collect::<Vec<_>>()
+        );
 
         let mut entry = a.entry(hash).or_insert(Vec::new());
 
@@ -32,11 +38,16 @@ async fn process(
             entry.push(addr);
         }
     } else if message_type == 0x02 {
-        let hash_bytes = &buf[1..33];
+        let hash_bytes = &buf[1..65];
         let hash = String::from_utf8_lossy(hash_bytes).to_string();
 
+        println!("Query received. Hash{} ", hash.clone());
+        println!(
+            "Known hashes: {:?}",
+            a.iter().map(|e| e.key().clone()).collect::<Vec<_>>()
+        );
         let list_of_peers: Vec<SocketAddr> = match a.get(&hash) {
-            Some(peers) => peers.clone(), // clone Vec<SocketAddr>
+            Some(peers) => peers.clone(),
             None => Vec::new(),
         };
 
@@ -46,8 +57,8 @@ async fn process(
 
         for peer in list_of_peers {
             if let SocketAddr::V4(v4) = peer {
-                let ip_bytes = v4.ip().octets(); // [u8; 4]
-                let port_bytes = v4.port().to_be_bytes(); // [u8; 2]
+                let ip_bytes = v4.ip().octets();
+                let port_bytes = v4.port().to_be_bytes();
 
                 response.extend_from_slice(&ip_bytes);
                 response.extend_from_slice(&port_bytes);

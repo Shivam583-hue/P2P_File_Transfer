@@ -1,5 +1,6 @@
 use BitTorrent::Manifest;
 use BitTorrent::hash_chunk;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io;
 
@@ -29,9 +30,9 @@ async fn main() {
                 let _ = write_to_file(i, chunk);
                 i = i + 1;
             }
-
+            let file_hash = format!("{:x}", Sha256::digest(&contents));
             let file1 = Manifest {
-                file_hash: "myfile123".to_string(),
+                file_hash: file_hash,
                 filename: "message.txt".to_string(),
                 total_size: attr.len(),
                 chunk_size: 256,
