@@ -41,7 +41,7 @@ async fn main() {
             };
 
             let json = serde_json::to_string_pretty(&file1).unwrap();
-            fs::write("message.manifest.json", json).unwrap(); // add this
+            fs::write("message.manifest.json", json).unwrap();
         }
     }
 }

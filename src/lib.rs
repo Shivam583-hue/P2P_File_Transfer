@@ -1,3 +1,6 @@
+pub mod piece_manager;
+use crate::piece_manager::ChunkState;
+use crate::piece_manager::PieceManager;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -128,11 +131,6 @@ pub async fn seeder() -> io::Result<()> {
     let mut buf = [0u8; 67];
     buf[0] = 0x01;
 
-    let hash_bytes = manifest.file_hash.as_bytes();
-    let mut fixed_hash = [0u8; 32];
-    let len = hash_bytes.len().min(32);
-    fixed_hash[..len].copy_from_slice(&hash_bytes[..len]);
-
     buf[1..65].copy_from_slice(manifest.file_hash.as_bytes());
     buf[65..67].copy_from_slice(&8080u16.to_be_bytes());
 
@@ -157,11 +155,6 @@ pub async fn leecher() -> io::Result<()> {
     let mut tracker_stream = TcpStream::connect("127.0.0.1:9000").await?;
     let mut buf = [0u8; 67];
     buf[0] = 0x02;
-
-    let hash_bytes = manifest.file_hash.as_bytes();
-    let mut fixed_hash = [0u8; 32];
-    let len = hash_bytes.len().min(32);
-    fixed_hash[..len].copy_from_slice(&hash_bytes[..len]);
 
     buf[1..65].copy_from_slice(manifest.file_hash.as_bytes());
     buf[65..67].copy_from_slice(&8080u16.to_be_bytes());
@@ -195,41 +188,83 @@ pub async fn leecher() -> io::Result<()> {
 
     let chunks: Arc<Mutex<Vec<Option<Vec<u8>>>>> =
         Arc::new(Mutex::new(vec![None; manifest.numberof_chunks]));
-    let total_chunks = manifest.numberof_chunks;
-    let num_peers = peers.len();
-
     let mut handles = Vec::new();
 
-    for (i, peer) in peers.iter().enumerate() {
-        let start = i * total_chunks / num_peers;
-        let end = if i == num_peers - 1 {
-            total_chunks
-        } else {
-            (i + 1) * total_chunks / num_peers
-        };
+    let manager = Arc::new(Mutex::new(PieceManager {
+        states: vec![ChunkState::Needed; manifest.numberof_chunks],
+    }));
+
+    for peer in peers.iter() {
         let peer_addr = *peer;
         let chunks_clone = chunks.clone();
         let manifest_clone = manifest.clone();
 
+        let manager_clone = manager.clone();
         let handle = tokio::spawn(async move {
-            let mut stream = TcpStream::connect(peer_addr).await.unwrap();
-            for i in start..end {
-                send_request(&mut stream, i as u32).await.unwrap();
-                let chunk = read_response(&mut stream).await.unwrap();
-                if hash_chunk(&chunk) != manifest_clone.hashes[i] {
-                    panic!("hash mismatch");
+            let mut stream = match TcpStream::connect(peer_addr).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            loop {
+                let maybe_chunk = {
+                    let mut mgr = manager_clone.lock().await;
+                    mgr.next_chunk()
+                };
+
+                let i = match maybe_chunk {
+                    Some(i) => i,
+                    None => break,
+                };
+
+                if send_request(&mut stream, i as u32).await.is_err() {
+                    let mut mgr = manager_clone.lock().await;
+                    mgr.requeue(i);
+                    break;
                 }
-                let mut lock = chunks_clone.lock().await;
-                lock[i] = Some(chunk);
+
+                let chunk = match read_response(&mut stream).await {
+                    Ok(c) => c,
+                    Err(_) => {
+                        let mut mgr = manager_clone.lock().await;
+                        mgr.requeue(i);
+                        break;
+                    }
+                };
+
+                if hash_chunk(&chunk) != manifest_clone.hashes[i] {
+                    let mut mgr = manager_clone.lock().await;
+                    mgr.requeue(i);
+                    continue;
+                }
+
+                {
+                    let mut lock = chunks_clone.lock().await;
+                    lock[i] = Some(chunk);
+                }
+
+                {
+                    let mut mgr = manager_clone.lock().await;
+                    mgr.complete(i);
+                }
             }
         });
         handles.push(handle);
-
     }
 
     for h in handles {
-        h.await.unwrap();
+        if let Err(e) = h.await {
+            eprintln!("Task failed: {:?}", e);
+        }
     }
+    let done = {
+        let mgr = manager.lock().await;
+        mgr.is_done()
+    };
+
+    if !done {
+        return Err(io::Error::new(io::ErrorKind::Other, "download incomplete"));
+    }
+
     let lock = chunks.lock().await;
 
     let mut final_data = Vec::new();
