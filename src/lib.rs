@@ -1,6 +1,7 @@
 pub mod piece_manager;
 use crate::piece_manager::ChunkState;
 use crate::piece_manager::PieceManager;
+use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -195,6 +196,7 @@ pub async fn leecher() -> io::Result<()> {
     }));
 
     for peer in peers.iter() {
+        let pb = ProgressBar::new(manifest.numberof_chunks as u64);
         let peer_addr = *peer;
         let chunks_clone = chunks.clone();
         let manifest_clone = manifest.clone();
@@ -246,7 +248,9 @@ pub async fn leecher() -> io::Result<()> {
                     let mut mgr = manager_clone.lock().await;
                     mgr.complete(i);
                 }
+                pb.inc(1);
             }
+            pb.finish_with_message("Download complete");
         });
         handles.push(handle);
     }
