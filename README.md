@@ -1,7 +1,7 @@
 
 # bittorrent-rs
 
-[Preview](preview.png)
+![Preview](preview.png)
 
 A BitTorrent-style P2P file transfer client built from scratch in Rust. No protocol libraries — raw TCP sockets, a custom binary protocol, SHA-256 chunk verification, a peer tracker, and concurrent multi-peer downloading.
 
