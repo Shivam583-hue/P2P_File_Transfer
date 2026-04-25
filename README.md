@@ -1,4 +1,7 @@
+
 # bittorrent-rs
+
+[Preview](preview.png)
 
 A BitTorrent-style P2P file transfer client built from scratch in Rust. No protocol libraries — raw TCP sockets, a custom binary protocol, SHA-256 chunk verification, a peer tracker, and concurrent multi-peer downloading.
 
@@ -110,3 +113,10 @@ src/
 | `indicatif` | Download progress bar |
 
 ---
+## Limitations
+
+- Only supports IPv4 peers
+- No peer discovery beyond tracker (no DHT)
+- No upload throttling or rate control
+- Single-file transfers only
+- No persistence of peer state
