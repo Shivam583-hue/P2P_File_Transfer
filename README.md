@@ -1,7 +1,9 @@
 
 # bittorrent-rs
 
-![Preview](preview.png)
+## Demo
+
+![Torrent demo](demo.gif)
 
 A BitTorrent-style P2P file transfer client built from scratch in Rust. No protocol libraries — raw TCP sockets, a custom binary protocol, SHA-256 chunk verification, a peer tracker, and concurrent multi-peer downloading.
 
@@ -11,21 +13,26 @@ Built as a Rust learning project covering async networking, systems concurrency,
 
 ## Architecture
 
-```
-[Seeder] ──── announce ────► [Tracker :9000] ◄──── query ──── [Leecher]
-   ▲                                                                │
-   └──────────────────────── chunks (TCP) ◄───────────────────────┘
-```
-
-Three separate processes:
-
-- **Tracker** — directory server on port 9000. Holds a `DashMap<file_hash, Vec<SocketAddr>>`. Peers register themselves, leechers ask who has the file.
-- **Seeder** — announces itself to the tracker, then serves chunk requests over TCP on port 8080.
-- **Leecher** — queries the tracker for peers, connects to all of them, downloads chunks concurrently, verifies each chunk's SHA-256 hash, and reassembles the file.
+![Architecture](architecture.jpg)
 
 ---
 
 ## How it works
+
+    1. Chunk the file — Run cargo run --bin client (no args). This reads message.txt, splits it into 256-byte chunks, writes each as message.chunk0, message.chunk1, etc., and creates message.manifest.json with all the SHA-256 hashes.
+   2. Start the tracker — cargo run --bin tracker. It just sits there holding a DashMap<file_hash, Vec<SocketAddr>> waiting for announcements and queries.
+  3. Start the seeder — cargo run --bin client -- seed. The seeder:
+    - Loads the manifest and all chunk files into memory
+    - Announces itself to the tracker ("hey, I have this file, I'm on port 8080")
+    - Listens on port 8080 and waits for leechers to connect to it
+  4. Run the leecher — cargo run --bin client -- leech. The leecher:
+    - Reads the manifest (it needs it too — it has the hashes)
+    - Queries the tracker — "who has this file?"
+    - Gets back a list of peer addresses
+    - Connects to the seeder(s) and pulls chunks from them (the leecher requests specific chunks, the seeder responds)
+    - Verifies each chunk's SHA-256 hash
+    - Reassembles the file
+    Simple words: Tracker has all the peers, seeder has the chunks, it announces to the tracker that it has the chunks, tracker stores the info, leecher queries the tracker to who has the chunks and the peer list, pulls specific chunks from seeder and verifies and reassembles the file.
 
 ### Chunking
 A file is split into 256-byte chunks. Each chunk is SHA-256 hashed. The hashes and file metadata are saved to a `manifest.json` file that both seeder and leecher use as the source of truth.
